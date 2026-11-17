@@ -1,0 +1,83 @@
+#importing necessary libraries
+import os
+import sys
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from rules.rules import *
+
+#initialising Spark session    
+spark = SparkSession  \
+    .builder  \
+    .appName("CreditCardFraud")  \
+    .getOrCreate()
+spark.sparkContext.setLogLevel('ERROR')
+
+# Reading input from Kafka
+credit_data = spark.readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "18.211.252.152:9092") \
+    .option("startingOffsets","earliest") \
+    .option("failOnDataLoss", "false") \
+    .option("maxOffsetsPerTrigger", "1000")  \
+    .option("subscribe", "transactions-topic-verified") \
+    .load()
+
+# Defining schema for transaction
+dataSchema = StructType() \
+    .add("card_id", LongType()) \
+    .add("member_id", LongType()) \
+    .add("amount", DoubleType()) \
+    .add("pos_id", LongType()) \
+    .add("postcode", IntegerType()) \
+    .add("transaction_dt", StringType())
+
+# Casting raw data as string and aliasing
+credit_data = credit_data.selectExpr("cast(value as string)") \
+    .withColumn("value", regexp_replace("value", r'\\"', '"')) \
+    .withColumn("value", expr("substring(value, 2, length(value)-2)")) \
+    .withColumn("value", regexp_replace("value", r'\\n$', ''))
+
+credit_data_stream = credit_data.select(from_json(col="value", schema=dataSchema).alias("credit_data")).select(
+    "credit_data.*")
+
+# Define UDF which verifies all the rules for each transaction and updates the lookup and master tables
+verify_all_rules = udf(verify_rules_status, StringType())
+
+Final_data = credit_data_stream \
+    .withColumn('status', verify_all_rules(credit_data_stream['card_id'],
+                                           credit_data_stream['member_id'],
+                                           credit_data_stream['amount'],
+                                           credit_data_stream['pos_id'],
+                                           credit_data_stream['postcode'],
+                                           credit_data_stream['transaction_dt']))
+
+def upsert_to_hbase(card_transaction):
+    import happybase
+    
+    connection = happybase.Connection('44.201.21.251')
+    table = connection.table('card_transactions')
+
+    for row in card_transaction.collect():
+        table.put(
+            row.card_id,   
+            {
+                b'cf:member_id': str(row.member_id).encode(),
+                b'cf:amount': str(row.amount).encode(),
+                b'cf:pos_id': str(row.pos_id).encode(),
+                b'cf:postcode': str(row.postcode).encode(),
+                b'cf:transaction_dt': str(row.transaction_dt).encode()
+            }
+        )
+    connection.close()
+
+# Write output to console as well
+output_data = Final_data \
+    .select("card_id", "member_id", "amount", "pos_id", "postcode", "transaction_dt") \
+    .writeStream \
+    .outputMode("update") \
+    .foreachBatch(upsert_to_hbase) \
+    .start()
+
+#indicating Spark to await termination
+output_data.awaitTermination()

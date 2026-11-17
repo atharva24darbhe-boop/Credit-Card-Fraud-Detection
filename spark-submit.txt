@@ -1,0 +1,16 @@
+spark-submit \
+  --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \
+  --conf spark.dynamicAllocation.enabled=false \
+  --conf spark.executor.instances=3 \
+  --conf spark.executor.cores=2 \
+  --conf spark.executor.memory=4g \
+  --conf spark.yarn.executor.memoryOverhead=1536 \
+  --conf spark.driver.memory=4g \
+  --conf spark.yarn.driver.memoryOverhead=1024 \
+  --conf spark.serializer=org.apache.spark.serializer.KryoSerializer \
+  --conf spark.sql.adaptive.enabled=true \
+  --conf spark.sql.shuffle.partitions=24 \
+  --conf spark.streaming.stopGracefullyOnShutdown=true \
+  --conf spark.executor.extraJavaOptions="-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35 -XX:G1ReservePercent=20" \
+  --conf spark.driver.extraJavaOptions="-XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=35 -XX:G1ReservePercent=20" \
+  src/driver.py
